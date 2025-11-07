@@ -1,295 +1,379 @@
 # financial_subtabs/financial_indicators.py
-# English-only labels. No icons.
-from __future__ import annotations
-
+import unicodedata
+import re
+from typing import List, Dict, Iterable
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-###############################################################################
-# Column alias map (robust to naming variants)
-###############################################################################
-ALIASES = {
-    "year": ["display_year", "Year", "year_label", "year"],
+# -------------------------------
+# 0) Helpers: normalization & safe math
+# -------------------------------
+def _strip_accents(s: str) -> str:
+    try:
+        s = unicodedata.normalize("NFD", s)
+        s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    except Exception:
+        pass
+    return s
+
+def _canon(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    s = _strip_accents(s)
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)  # keep letters/digits, collapse others
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _ensure_numeric_frame(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for c in out.columns:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    return out.replace([np.inf, -np.inf], np.nan)
+
+def _ensure_numeric_series(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan)
+
+def _sdiv(a: pd.Series, b: pd.Series) -> pd.Series:
+    """Safe divide aligned on index."""
+    a = _ensure_numeric_series(a)
+    b = _ensure_numeric_series(b)
+    out = a / b
+    out.replace([np.inf, -np.inf], np.nan, inplace=True)
+    return out
+
+# -------------------------------
+# 1) Year column & base shaping
+# -------------------------------
+def _year_col(df: pd.DataFrame) -> str:
+    candidates = ["display_year", "year_label", "year", "Year", "FY", "fy"]
+    lower_map = {c.lower(): c for c in df.columns}
+    for c in candidates:
+        if c in df.columns:
+            return c
+        if c.lower() in lower_map:
+            return lower_map[c.lower()]
+    # Fallback: try any column that looks like a year label
+    for c in df.columns:
+        vc = df[c].astype(str).str.fullmatch(r"\d{4}[A-Z]?").sum()
+        if vc >= max(1, int(0.5 * len(df))):
+            return c
+    # last resort: create sequential index as year
+    return None
+
+def _build_base(fin_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns a wide frame indexed by year (ascending) with all original columns preserved.
+    If multiple rows per year exist, keeps the last one.
+    """
+    ycol = _year_col(fin_df)
+    if ycol is None:
+        # fabricate a year index if truly absent
+        tmp = fin_df.copy()
+        tmp["__year__"] = pd.to_numeric(tmp.get("Year", tmp.index), errors="coerce")
+        base = tmp.drop_duplicates(subset=["__year__"]).set_index("__year__").sort_index()
+        base.index.name = "Year"
+        return base
+    base = fin_df.drop_duplicates(subset=[ycol]).copy()
+    base[ycol] = base[ycol].astype(str)
+    # normalize labels like "2024F" → "2024F" (keep as label), but sort by numeric part
+    # extract numeric prefix for sorting
+    sort_key = base[ycol].str.extract(r"(\d{4})", expand=False).astype(float)
+    base = base.assign(__sort_year__=sort_key).sort_values(["__sort_year__", ycol])
+    base = base.drop(columns="__sort_year__")
+    base = base.set_index(ycol)
+    return base
+
+# -------------------------------
+# 2) Alias dictionary
+# -------------------------------
+# Define flexible alias lists. Add more if your CSV uses different headers.
+ALIASES: Dict[str, List[str]] = {
+    # Income / margins
     "revenue": [
-        "Net Revenue", "Revenue", "Net Sales", "Sales", "Operating revenue",
-        "Doanh thu", "Doanh thu thuần"
+        "net revenue", "revenue", "net sales", "sales", "doanh thu", "doanh thu thuần"
     ],
     "cogs": [
-        "Cost of Goods Sold (COGS)", "COGS", "Cost of goods sold", "Giá vốn"
+        "cost of goods sold", "cogs", "gia von", "giá vốn", "giá vốn hàng bán"
     ],
     "gross_profit": [
-        "Gross Profit", "Gross profit", "Lợi nhuận gộp"
+        "gross profit", "loi nhuan gop", "lợi nhuận gộp"
+    ],
+    "financial_income": [
+        "financial income", "financial revenue", "thu nhap tai chinh", "doanh thu tai chinh"
+    ],
+    "financial_expenses": [
+        "financial expenses", "chi phi tai chinh"
     ],
     "ebit": [
-        "Operating Profit", "Operating Income", "EBIT",
-        "Profit/(Loss) from Business Activities", "Lợi nhuận từ HĐKD"
+        "ebit", "operating profit", "operating income", "profit from business activities",
+        "loi nhuan hoat dong", "loi nhuan tu hoat dong kinh doanh",
+        "profit loss from business activities"
     ],
-    "interest_exp": [
-        "Interest Expenses", "Interest expense", "Chi phí lãi vay"
+    "interest_expenses": [
+        "interest expense", "interest expenses", "interest paid", "chi phi lai vay"
     ],
-    "net_profit": [
-        "Net Profit/(Loss) After Tax", "Net Profit After Tax",
-        "Profit after tax", "Lợi nhuận sau thuế", "Net_Profit"
+    "net_income": [
+        "net profit after tax", "profit after tax", "net profit loss after tax",
+        "loi nhuan sau thue", "loi nhuan ròng", "net income"
     ],
+    "other_income": [
+        "other income", "other income net"
+    ],
+    "tax_expense": [
+        "corporate income tax expense", "income tax expense", "thue thu nhap doanh nghiep"
+    ],
+    "depreciation": [
+        "depreciation", "amortization", "depreciation of fixed assets",
+        "khau hao", "khấu hao"
+    ],
+    # Balance sheet core
     "current_assets": [
-        "CURRENT ASSETS", "CURRENT ASSETS (Bn. VND)", "Current assets",
-        "Tài sản ngắn hạn", "Current_Assets"
+        "current assets", "tai san ngan han"
     ],
     "cash": [
-        "Cash and Cash Equivalents", "Cash & equivalents",
-        "Tiền và tương đương tiền", "Cash"
+        "cash and cash equivalents", "cash", "tien va tuong duong tien", "tiền"
     ],
     "receivables": [
-        "Accounts Receivable", "Trade receivables",
-        "Phải thu khách hàng", "Receivables"
+        "accounts receivable", "trade receivables", "phai thu", "phải thu"
     ],
     "inventory": [
-        "Inventory, Net", "Inventories", "Hàng tồn kho", "Net Inventories"
+        "inventory", "inventories", "hang ton kho", "hàng tồn kho"
     ],
     "current_liabilities": [
-        "Short-Term Liabilities", "Current liabilities", "Nợ ngắn hạn",
-        "Current_Liabilities"
+        "current liabilities", "no ngan han", "nợ ngắn hạn"
     ],
     "total_assets": [
-        "TOTAL ASSETS", "Total assets", "Tổng tài sản", "Total_Assets"
+        "total assets", "tong tai san", "tổng tài sản"
     ],
-    "total_liab": [
-        "LIABILITIES", "Total liabilities", "Tổng nợ phải trả", "Total_Liabilities"
+    "total_liabilities": [
+        "total liabilities", "tong no phai tra", "tổng nợ phải trả"
     ],
     "equity": [
-        "EQUITY", "Owner’s equity", "Vốn chủ sở hữu", "Equity",
-        "OWNER'S EQUITY(Bn.VND)"
+        "equity", "owner s equity", "owner's equity", "von chu so huu", "vốn chủ sở hữu"
     ],
     "st_debt": [
-        "Short-Term Loans", "Short-term borrowings", "Vay ngắn hạn"
+        "short term loans", "short term borrowings", "short term debt",
+        "short term loans and financial lease payables", "no vay ngan han"
     ],
     "lt_debt": [
-        "Long-Term Loans", "Long-term borrowings", "Vay dài hạn"
+        "long term loans", "long term borrowings", "long term debt",
+        "long term loans and financial lease payables", "no vay dai han"
     ],
-    "depr": [
-        "Depreciation of Fixed Assets and Investment Properties",
-        "Depreciation expense", "Khấu hao TSCĐ"
+    # Optional helpful aliases
+    "ebitda": [
+        "ebitda"
     ],
-    "amort": [
-        "Amortization of Goodwill", "Amortization", "Phân bổ"
+    "total_debt": [
+        "total debt", "tong du no", "total interest bearing debt"
     ],
 }
 
-###############################################################################
-# Helpers
-###############################################################################
-def _pickcol(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    if not candidates:
-        return None
-    lower_map = {c.lower(): c for c in df.columns}
-    for cand in candidates:
-        if cand in df.columns:
-            return cand
-        lc = cand.lower()
-        if lc in lower_map:
-            return lower_map[lc]
-    return None
+# Precompile canonical map for faster matching
+def _build_col_lookup(columns: Iterable[str]) -> Dict[str, str]:
+    return {_canon(c): c for c in columns}
 
-def _year_col(df: pd.DataFrame) -> str:
-    y = _pickcol(df, ALIASES["year"])
-    if y is None:
-        raise KeyError("Year column not found. Ensure a 'display_year' / 'year' field exists.")
-    return y
+def _match_columns(columns: Iterable[str], alias_list: List[str]) -> List[str]:
+    """Return concrete column names in 'columns' that match any alias pattern."""
+    canon_map = _build_col_lookup(columns)
+    hits = []
+    for raw in alias_list:
+        key = _canon(raw)
+        # exact canonical match
+        if key in canon_map:
+            hits.append(canon_map[key])
+            continue
+        # loose contains match (word boundaries)
+        for ccanon, orig in canon_map.items():
+            if key and key in ccanon:
+                hits.append(orig)
+    # keep unique, preserve original order of the DataFrame columns
+    uniq = []
+    seen = set()
+    for c in columns:
+        if c in hits and c not in seen:
+            uniq.append(c)
+            seen.add(c)
+    return uniq
 
-def _ensure_numeric(obj: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
-    """
-    Accepts Series or DataFrame.
-    Converts values to numeric with errors coerced to NaN.
-    """
-    if isinstance(obj, pd.Series):
-        return pd.to_numeric(obj, errors="coerce")
-    # DataFrame path
-    return obj.apply(pd.to_numeric, errors="coerce")
-
-def _get_series(df: pd.DataFrame, alias_key: str) -> pd.Series:
-    """
-    Try to read a wide-format column by alias list.
-    If multiple aliases exist, sum them (column-wise) and return a single Series.
-    """
-    ycol = _year_col(df)
-    base = df.drop_duplicates(subset=[ycol]).set_index(ycol).sort_index()
-    hits = [_pickcol(base, [cand]) for cand in ALIASES.get(alias_key, [])]
-    hits = [h for h in hits if h is not None]
+def _get_series_from_alias(base: pd.DataFrame, alias_key: str) -> pd.Series:
+    """Sum across all columns that match the alias list (wide format)."""
+    alias = ALIASES.get(alias_key, [])
+    hits = _match_columns(base.columns, alias)
     if not hits:
         return pd.Series(dtype=float)
-
     if len(hits) == 1:
-        ser = _ensure_numeric(base[hits[0]])
-    else:
-        ser = _ensure_numeric(base[hits]).sum(axis=1)
-
-    ser.name = alias_key
+        return _ensure_numeric_series(base[hits[0]]).rename(alias_key)
+    # sum multiple numeric columns
+    ser = _ensure_numeric_frame(base[hits]).sum(axis=1, skipna=True).rename(alias_key)
     return ser
 
-def _avg_series(s: pd.Series) -> pd.Series:
-    if s.empty:
-        return s
-    return (s + s.shift(1)) / 2.0
+def _coalesce(*series: Iterable[pd.Series]) -> pd.Series:
+    """Return the first non-empty series (by length)."""
+    for s in series:
+        if isinstance(s, pd.Series) and s.size > 0:
+            return s
+    return pd.Series(dtype=float)
 
-def _safe_div(num: pd.Series, den: pd.Series, default=np.nan) -> pd.Series:
-    out = num.astype(float) / den.astype(float)
-    out = out.replace([np.inf, -np.inf], np.nan)
-    return out.fillna(default)
+# -------------------------------
+# 3) Compute indicators
+# -------------------------------
+def _total_debt(base: pd.DataFrame) -> pd.Series:
+    """Prefer explicit total_debt; else sum st_debt + lt_debt; else fallback to total_liabilities."""
+    td = _get_series_from_alias(base, "total_debt")
+    if not td.empty:
+        return td
+    sd = _get_series_from_alias(base, "st_debt")
+    ld = _get_series_from_alias(base, "lt_debt")
+    if not sd.empty or not ld.empty:
+        sd = sd.reindex(base.index, fill_value=np.nan)
+        ld = ld.reindex(base.index, fill_value=np.nan)
+        return (sd.add(ld, fill_value=np.nan)).rename("total_debt")
+    # last resort
+    tl = _get_series_from_alias(base, "total_liabilities")
+    return tl.rename("total_debt")
 
-def _fmt_percent(x: float) -> str:
-    if pd.isna(x):
-        return ""
-    return f"{x:.2%}"
+def _ebitda(base: pd.DataFrame) -> pd.Series:
+    ebitda = _get_series_from_alias(base, "ebitda")
+    if not ebitda.empty:
+        return ebitda
+    ebit = _get_series_from_alias(base, "ebit")
+    dep  = _get_series_from_alias(base, "depreciation")
+    if ebit.empty or dep.empty:
+        # Try reconstruct from financial income/expenses if needed (conservative)
+        return pd.Series(dtype=float)
+    out = ebit.add(dep, fill_value=np.nan).rename("ebitda")
+    return out
 
-def _fmt_ratio(x: float) -> str:
-    if pd.isna(x):
-        return ""
-    return f"{x:,.2f}"
-
-###############################################################################
-# Metric definitions
-###############################################################################
-METADATA = [
-    ("Current Ratio", "current_ratio"),
-    ("Quick Ratio", "quick_ratio"),
-    ("Working Capital to Total Assets", "wc_to_assets"),
-    ("Debt to Assets", "debt_to_assets"),
-    ("Debt to Equity", "debt_to_equity"),
-    ("Equity to Liabilities", "equity_to_liabilities"),
-    ("Long Term Debt to Assets", "lt_debt_to_assets"),
-    ("Net Debt to Equity", "net_debt_to_equity"),
-    ("Receivables Turnover", "recv_turnover"),
-    ("Inventory Turnover", "inv_turnover"),
-    ("Asset Turnover", "asset_turnover"),
-    ("ROA", "roa_pct"),
-    ("ROE", "roe_pct"),
-    ("EBIT to Assets", "ebit_to_assets_pct"),
-    ("Operating Income to Debt", "ebit_to_debt"),
-    ("Net Profit Margin", "npm_pct"),
-    ("Gross Margin", "gm_pct"),
-    ("Interest Coverage", "interest_coverage"),
-    ("EBITDA to Interest", "ebitda_to_interest"),
-    ("Total Debt to EBITDA", "debt_to_ebitda"),
-]
-PCT_KEYS = {"roa_pct", "roe_pct", "ebit_to_assets_pct", "npm_pct", "gm_pct"}
-
-###############################################################################
-# Core calculation
-###############################################################################
 def compute_indicators(fin_df: pd.DataFrame) -> pd.DataFrame:
-    ycol = _year_col(fin_df)
+    base = _build_base(fin_df)
 
-    # Pull base series
-    revenue   = _get_series(fin_df, "revenue")
-    cogs      = _get_series(fin_df, "cogs")
-    gross_p   = _get_series(fin_df, "gross_profit")
-    ebit      = _get_series(fin_df, "ebit")
-    int_exp   = _get_series(fin_df, "interest_exp")
-    net_pft   = _get_series(fin_df, "net_profit")
+    # Pull essentials
+    revenue   = _get_series_from_alias(base, "revenue")
+    cogs      = _get_series_from_alias(base, "cogs")
+    gross_p   = _get_series_from_alias(base, "gross_profit")
+    ebit      = _get_series_from_alias(base, "ebit")
+    interest  = _get_series_from_alias(base, "interest_expenses")
+    net_inc   = _get_series_from_alias(base, "net_income")
 
-    cur_assets = _get_series(fin_df, "current_assets")
-    cash       = _get_series(fin_df, "cash")
-    recv       = _get_series(fin_df, "receivables")
-    inv        = _get_series(fin_df, "inventory")
+    curr_assets = _get_series_from_alias(base, "current_assets")
+    cash       = _get_series_from_alias(base, "cash")
+    recv       = _get_series_from_alias(base, "receivables")
+    inv        = _get_series_from_alias(base, "inventory")
 
-    cur_liab   = _get_series(fin_df, "current_liabilities")
-    tot_assets = _get_series(fin_df, "total_assets")
-    tot_liab   = _get_series(fin_df, "total_liab")
-    equity     = _get_series(fin_df, "equity")
-    st_debt    = _get_series(fin_df, "st_debt")
-    lt_debt    = _get_series(fin_df, "lt_debt")
+    curr_liab  = _get_series_from_alias(base, "current_liabilities")
+    tot_assets = _get_series_from_alias(base, "total_assets")
+    tot_liab   = _get_series_from_alias(base, "total_liabilities")
+    equity     = _get_series_from_alias(base, "equity")
 
-    # Debt proxies
-    idx = tot_liab.index if not tot_liab.empty else (st_debt.index if not st_debt.empty else lt_debt.index)
-    total_debt = pd.Series(dtype=float, index=idx)
-    if not st_debt.empty or not lt_debt.empty:
-        total_debt = _ensure_numeric(st_debt).reindex(idx).fillna(0) + _ensure_numeric(lt_debt).reindex(idx).fillna(0)
+    st_debt    = _get_series_from_alias(base, "st_debt")
+    lt_debt    = _get_series_from_alias(base, "lt_debt")
+    tot_debt   = _total_debt(base)
+    ebitda     = _ebitda(base)
+
+    # Fallbacks used in some ratios
+    if gross_p.empty and not revenue.empty and not cogs.empty:
+        gross_p = (revenue - cogs).rename("gross_profit")
+
+    # Quick Assets best-effort
+    if not curr_assets.empty and not inv.empty:
+        quick_assets = curr_assets - inv
+    elif not cash.empty and not recv.empty:
+        quick_assets = cash.add(recv, fill_value=np.nan)
     else:
-        total_debt = _ensure_numeric(tot_liab).copy()
-
-    # D&A and EBITDA
-    depr  = _get_series(fin_df, "depr")
-    amort = _get_series(fin_df, "amort")
-    da = pd.Series(dtype=float, index=ebit.index if not ebit.empty else depr.index)
-    da = _ensure_numeric(depr).reindex(da.index).fillna(0) + _ensure_numeric(amort).reindex(da.index).fillna(0)
-    ebitda = (_ensure_numeric(ebit).reindex(da.index).fillna(0) + da) if not ebit.empty else pd.Series(dtype=float, index=da.index)
-
-    # Averages for turnover/returns
-    recv_avg   = _avg_series(recv)
-    inv_avg    = _avg_series(inv)
-    assets_avg = _avg_series(tot_assets)
-    equity_avg = _avg_series(equity)
+        quick_assets = pd.Series(dtype=float)
 
     # Indicators
     indicators = {}
 
-    # Liquidity
-    indicators["current_ratio"] = _safe_div(cur_assets, cur_liab)
-    # Quick ratio = (Cash + Receivables) / Current Liabilities (fallback to (CA - Inventory))
-    if not cash.empty and not recv.empty:
-        quick_num = cash.reindex(cur_liab.index).fillna(0) + recv.reindex(cur_liab.index).fillna(0)
-    else:
-        quick_num = cur_assets.reindex(cur_liab.index).fillna(0) - inv.reindex(cur_liab.index).fillna(0)
-    indicators["quick_ratio"]  = _safe_div(quick_num, cur_liab)
-    indicators["wc_to_assets"] = _safe_div(cur_assets - cur_liab, tot_assets)
+    indicators["Current Ratio"] = _sdiv(curr_assets, curr_liab)
+    indicators["Quick Ratio"] = _sdiv(quick_assets, curr_liab)
+    indicators["Working Capital to Total Assets"] = _sdiv(curr_assets - curr_liab, tot_assets)
 
-    # Structure / leverage
-    indicators["debt_to_assets"]        = _safe_div(total_debt.reindex(tot_assets.index), tot_assets)
-    indicators["debt_to_equity"]        = _safe_div(total_debt.reindex(equity.index),     equity)
-    indicators["equity_to_liabilities"] = _safe_div(equity, tot_liab)
-    indicators["lt_debt_to_assets"]     = _safe_div(lt_debt.reindex(tot_assets.index),    tot_assets)
-    indicators["net_debt_to_equity"]    = _safe_div((total_debt - cash.reindex(total_debt.index).fillna(0)), equity.reindex(total_debt.index))
+    # Capital structure
+    # Prefer total liabilities for Debt/Assets; for Debt/Equity we prefer interest-bearing debt
+    indicators["Debt to Assets"] = _coalesce(_sdiv(tot_liab, tot_assets), _sdiv(tot_debt, tot_assets))
+    indicators["Debt to Equity"] = _coalesce(_sdiv(tot_debt, equity), _sdiv(tot_liab, equity))
+    indicators["Equity to Liabilities"] = _sdiv(equity, tot_liab)
+    indicators["Long Term Debt to Assets"] = _sdiv(lt_debt, tot_assets)
+    indicators["Net Debt to Equity"] = _sdiv(tot_debt - cash, equity)
 
     # Efficiency
-    indicators["recv_turnover"]  = _safe_div(revenue, recv_avg.replace(0, np.nan))
-    indicators["inv_turnover"]   = _safe_div(cogs,    inv_avg.replace(0, np.nan))
-    indicators["asset_turnover"] = _safe_div(revenue, assets_avg.replace(0, np.nan))
+    indicators["Receivables Turnover"] = _sdiv(revenue, recv)   # year-end approx if no average
+    indicators["Inventory Turnover"]   = _sdiv(cogs, inv)       # year-end approx if no average
+    indicators["Asset Turnover"]       = _sdiv(revenue, tot_assets)
 
     # Profitability
-    indicators["roa_pct"]            = _safe_div(net_pft, assets_avg.replace(0, np.nan))
-    indicators["roe_pct"]            = _safe_div(net_pft, equity_avg.replace(0, np.nan))
-    indicators["ebit_to_assets_pct"] = _safe_div(ebit,    assets_avg.replace(0, np.nan))
-    indicators["npm_pct"]            = _safe_div(net_pft, revenue.replace(0, np.nan))
-    indicators["gm_pct"]             = _safe_div(gross_p, revenue.replace(0, np.nan))
+    indicators["ROA"]                 = _sdiv(net_inc, tot_assets)
+    indicators["ROE"]                 = _sdiv(net_inc, equity)
+    indicators["EBIT to Assets"]      = _sdiv(ebit, tot_assets)
+    indicators["Operating Income to Debt"] = _coalesce(_sdiv(ebit, tot_debt), _sdiv(ebit, tot_liab))
+    indicators["Net Profit Margin"]   = _sdiv(net_inc, revenue)
+    indicators["Gross Margin"]        = _sdiv(gross_p, revenue)
 
     # Coverage
-    indicators["interest_coverage"]  = _safe_div(ebit,   int_exp.replace(0, np.nan))
-    indicators["ebitda_to_interest"] = _safe_div(ebitda, int_exp.reindex(ebitda.index).replace(0, np.nan))
-    indicators["debt_to_ebitda"]     = _safe_div(total_debt.reindex(ebitda.index), ebitda.replace(0, np.nan))
+    indicators["Interest Coverage"]   = _sdiv(ebit, interest)
+    indicators["EBITDA to Interest"]  = _sdiv(ebitda, interest)
+    indicators["Total Debt to EBITDA"]= _sdiv(tot_debt, ebitda)
 
-    # Assemble wide table
-    all_years = fin_df[_year_col(fin_df)].astype(str).unique().tolist()
-    # Sort: actuals first, forecasts (ending with 'F') after
-    all_years = sorted(all_years, key=lambda x: (x.endswith("F"), x))
+    # Assemble table: rows = indicator, cols = years (ascending by numeric core)
+    df_out = pd.DataFrame(indicators)
+    # df_out currently indexed by year labels; ensure sensible sorting by numeric prefix
+    idx = pd.Index(df_out.index.astype(str), name="Year")
+    sort_key = idx.to_series().str.extract(r"(\d{4})", expand=False).astype(float)
+    df_out = df_out.assign(__sort_year__=sort_key).sort_values(["__sort_year__", "Year"])
+    df_out = df_out.drop(columns="__sort_year__")
 
-    out = pd.DataFrame(index=[m[0] for m in METADATA], columns=all_years, dtype=float)
-    for disp, key in METADATA:
-        s = indicators.get(key, pd.Series(dtype=float))
-        if not s.empty:
-            sv = s.copy()
-            sv.index = sv.index.astype(str)
-            out.loc[disp, sv.index] = sv.values
+    # transpose: rows=indicators, cols=years
+    view = df_out.T
 
-    return out
+    # Nice order required by you
+    desired_order = [
+        "Current Ratio",
+        "Quick Ratio",
+        "Working Capital to Total Assets",
+        "Debt to Assets",
+        "Debt to Equity",
+        "Equity to Liabilities",
+        "Long Term Debt to Assets",
+        "Net Debt to Equity",
+        "Receivables Turnover",
+        "Inventory Turnover",
+        "Asset Turnover",
+        "ROA",
+        "ROE",
+        "EBIT to Assets",
+        "Operating Income to Debt",
+        "Net Profit Margin",
+        "Gross Margin",
+        "Interest Coverage",
+        "EBITDA to Interest",
+        "Total Debt to EBITDA",
+    ]
+    # keep only those computed
+    ordered = [k for k in desired_order if k in view.index]
+    view = view.loc[ordered]
 
-###############################################################################
-# Rendering
-###############################################################################
+    # Optional: format ratios to 4 decimals; leave intensity/turnovers raw.
+    # To keep numeric for download/sort, do not cast to strings here.
+    return view
+
+# -------------------------------
+# 4) Streamlit renderer
+# -------------------------------
 def render(fin_df: pd.DataFrame):
-    st.subheader("FINANCIAL INDICATORS (computed)")
+    st.subheader("FINANCIAL INDICATORS")
 
     view = compute_indicators(fin_df)
     if view.empty:
-        st.info("No sufficient data to compute indicators. Please verify the dataset headers.")
+        st.info("No sufficient data to compute indicators. Please verify column names in the dataset.")
         return
 
-    formatted = view.copy()
-    for disp, key in METADATA:
-        row = view.loc[disp]
-        if key in PCT_KEYS:
-            formatted.loc[disp] = row.apply(_fmt_percent)
-        else:
-            formatted.loc[disp] = row.apply(_fmt_ratio)
-
-    st.dataframe(formatted, use_container_width=True, hide_index=False)
+    # Display
+    st.dataframe(
+        view,
+        use_container_width=True,
+        hide_index=False
+    )
