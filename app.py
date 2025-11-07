@@ -1,49 +1,71 @@
 # app.py
-import os, sys
+import sys, os
 import streamlit as st
 
-# đảm bảo chạy từ project root
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from ui.layout import inject_css_theme, sidebar_inputs, get_active_selection, get_data
+from ui.layout import inject_css_theme, sidebar_inputs, get_data
 
-# các tab con (đã có sẵn)
-from ui.tabs.financial import income as tab_income
-from ui.tabs.financial import balance as tab_balance
-from ui.tabs.financial import cashflow as tab_cashflow
-from ui.tabs.financial import indicators as tab_indicators
-from ui.tabs.financial import note as tab_note
-from ui.tabs.financial import report as tab_report
+def _safe_import(path):
+    try:
+        return __import__(path, fromlist=["_"])
+    except Exception:
+        return None
 
-# ====== PAGE CONFIG ======
-st.set_page_config(
-    page_title="AI-Driven Default Risk – Financial & Sentiment",
-    page_icon="📊",
-    layout="wide",
-)
+tab_income     = _safe_import("ui.tabs.financial.income")
+tab_balance    = _safe_import("ui.tabs.financial.balance")
+tab_cashflow   = _safe_import("ui.tabs.financial.cashflow")
+tab_indicators = _safe_import("ui.tabs.financial.indicators")
+tab_note       = _safe_import("ui.tabs.financial.note")
+tab_report     = _safe_import("ui.tabs.financial.report")
+tab_news       = _safe_import("ui.tabs.sentiment.news")
+tab_sagg       = _safe_import("ui.tabs.sentiment.aggregates")
+tab_model      = _safe_import("ui.tabs.summary.modeling")
 
+st.set_page_config(page_title="Financial & Sentiment Dashboard", layout="wide")
 inject_css_theme()
-sidebar_inputs()                          # form bên trái
-ticker, section = get_active_selection()  # chỉ có khi user bấm "Xem báo cáo"
-data = get_data(ticker, years=10)
+st.title("Financial & Sentiment Dashboard")
 
-# ====== HEADER ======
-st.markdown(f'<div class="section-h1">Báo cáo cho <span style="color:#0B74D0">{ticker}</span></div>', unsafe_allow_html=True)
+ticker = sidebar_inputs()
 
-# ====== ROUTER ======
-if section == "Financial":
-    tabs = st.tabs(["Income statement","Balance Sheet","Cashflow Statement","Financial Indicator","Note","Report"])
-    with tabs[0]: tab_income.render(data)
-    with tabs[1]: tab_balance.render(data)
-    with tabs[2]: tab_cashflow.render(data)
-    with tabs[3]: tab_indicators.render(data)
-    with tabs[4]: tab_note.render(data)
-    with tabs[5]: tab_report.render(data)
+data = None
+data_error = None
+if ticker:
+    try:
+        data = get_data(ticker, years=10)
+    except Exception as e:
+        data_error = str(e)
 
-elif section == "Sentiment":
-    st.info("Tab Sentiment sẽ tích hợp sau (news, aggregates, …).")
+tab_titles, tab_renderers = [], []
+def _add(title, module):
+    if module is not None and hasattr(module, "render"):
+        tab_titles.append(title)
+        tab_renderers.append(module.render)
 
-else:  # Summary
-    st.info("Tab Summary sẽ tích hợp sau (modeling, explainability, …).")
+_add("Income Statement", tab_income)
+_add("Balance Sheet", tab_balance)
+_add("Cash Flow Statement", tab_cashflow)
+_add("Indicators", tab_indicators)
+_add("Notes", tab_note)
+_add("Report", tab_report)
+_add("Sentiment — News", tab_news)
+_add("Sentiment — Aggregates", tab_sagg)
+_add("Summary — Modeling", tab_model)
+
+if not tab_titles:
+    st.warning("No child tabs with a function `render(fin_filtered)` were found.")
+else:
+    tabs = st.tabs(tab_titles)
+    if data_error:
+        for t in tabs:
+            with t:
+                st.error(f"Cannot load data for {ticker}. Details: {data_error}")
+    else:
+        for (t, render_fn) in zip(tabs, tab_renderers):
+            with t:
+                try:
+                    render_fn(data)
+                except Exception as e:
+                    st.error(f"Tab error: {e}")
