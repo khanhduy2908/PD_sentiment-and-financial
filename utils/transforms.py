@@ -1,33 +1,37 @@
-
-import pandas as pd
-import numpy as np
+# utils/transforms.py
 import re
+import pandas as pd
 
 def build_display_year_column(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+    """
+    Ensure a 'display_year' column exists for consistent UI.
+    Priority: display_year > Year > year > Năm > period.
+    """
     if "display_year" in df.columns:
+        df["display_year"] = df["display_year"].astype(str)
         return df
-    ycol = None
-    for c in ["Year","year","Năm","nam"]:
+
+    for c in ["Year", "year", "Năm", "period"]:
         if c in df.columns:
-            ycol = c; break
-    if ycol is None:
-        ycol = "Year"
-        df[ycol] = np.nan
-    df["display_year"] = df[ycol].astype(str).str.replace(r"\.0$","",regex=True)
+            df["display_year"] = df[c].astype(str)
+            break
+    else:
+        df["display_year"] = ""
+
     return df
 
-def sort_year_labels(labels):
-    def _key(s):
-        s = str(s)
-        base = re.sub(r"[^0-9]","", s)
-        try:
-            n = int(base)
-        except:
-            n = 0
-        isF = s.endswith("F") or s.endswith("f")
-        return (n, 1 if isF else 0)
-    return sorted(labels, key=_key)
+def sort_year_label(label: str):
+    """
+    Sorting key for year labels:
+    - Extract 4-digit year.
+    - Real years first, forecast years (suffix 'F'/'f') after.
+    - Fallback if no year found.
+    """
+    s = str(label).strip()
+    is_forecast = s.endswith(("F", "f"))
+    m = re.search(r"(19|20)\d{2}", s)
+    year = int(m.group(0)) if m else 9999
+    return (year, 1 if is_forecast else 0, s)
 
 def pivot_long_to_table(fin_df: pd.DataFrame, stmt_names):
     scol = _pick(fin_df, ["statement","section"])
