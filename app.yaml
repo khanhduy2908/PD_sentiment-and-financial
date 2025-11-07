@@ -1,0 +1,7 @@
+app:
+  default_year_window: 10
+  currency: "VND"
+  display_scale: 1
+  language: "en"
+labels:
+  rule: "three_consecutive_negative_net_income"
