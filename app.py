@@ -14,6 +14,7 @@ def _safe_import(path):
     except Exception:
         return None
 
+# Your existing tab modules (each must have render(fin_filtered))
 tab_income     = _safe_import("ui.tabs.financial.income")
 tab_balance    = _safe_import("ui.tabs.financial.balance")
 tab_cashflow   = _safe_import("ui.tabs.financial.cashflow")
@@ -44,6 +45,7 @@ def _add(title, module):
         tab_titles.append(title)
         tab_renderers.append(module.render)
 
+# Show all aspects as tabs (no “group” selector)
 _add("Income Statement", tab_income)
 _add("Balance Sheet", tab_balance)
 _add("Cash Flow Statement", tab_cashflow)
