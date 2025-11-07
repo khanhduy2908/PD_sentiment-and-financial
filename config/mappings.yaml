@@ -1,0 +1,19 @@
+financial:
+  ticker: "ticker"
+  period: "period"
+  statement: "statement"
+  account: "account"
+  value: "value"
+
+keywords:
+  income:
+    net_revenue: ["net revenue", "revenue", "sales"]
+    cogs: ["cogs", "cost of goods"]
+    ebit: ["ebit", "operating profit", "profit from operations"]
+    net_income: ["net income", "net profit", "profit after tax"]
+  balance:
+    total_assets: ["total assets"]
+    total_equity: ["total equity", "shareholder", "owners' equity"]
+    total_liabilities: ["total liabilities"]
+  cashflow:
+    ocf: ["net cash from operating", "operating activities"]
