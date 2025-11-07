@@ -1,43 +1,62 @@
 import os
-import io
 import pandas as pd
-from typing import List
+from typing import List, Optional, Tuple
 
-CSV_PATH_DEFAULT = "data/bctc_final.csv"
+# Thử theo thứ tự: repo/data và /mnt/data (nơi bạn đã up)
+CANDIDATE_PATHS = [
+    "data/bctc_final.csv",
+    "/mnt/data/bctc_final.csv",
+]
 
-def _ensure_csv_path(csv_path: str):
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"File not found: {csv_path}")
-    _, ext = os.path.splitext(csv_path)
-    if ext.lower() != ".csv":
-        raise ValueError(f"Expected a CSV file, got '{ext}'. Please save/export as real CSV (not Excel).")
+def resolve_csv_path(candidates: Optional[List[str]] = None) -> Tuple[str, List[str]]:
+    candidates = candidates or CANDIDATE_PATHS
+    tried = []
+    for p in candidates:
+        tried.append(p)
+        if os.path.exists(p):
+            return p, tried
+    raise FileNotFoundError(f"CSV not found. Tried: {', '.join(tried)}")
+
+def _is_probably_excel_bytes(sample: bytes) -> bool:
+    # XLSX là zip-based, thường mở đầu bằng b'PK\x03\x04'
+    return sample[:2] == b"PK"
 
 def _read_csv_strict(csv_path: str) -> pd.DataFrame:
-    """
-    Đọc CSV 'thật' (không đọc Excel giả CSV). Có sniff dấu phân cách.
-    Không dùng openpyxl. Nếu không parse được -> raise lỗi gợi ý đúng nguyên nhân.
-    """
-    _ensure_csv_path(csv_path)
-
-    # Đọc thử vài dòng đầu để đoán sep
+    # 1) đọc một khúc đầu để đoán delimiter + phát hiện Excel giả CSV
     with open(csv_path, "rb") as f:
         head = f.read(4096)
-    sample = head.decode("utf-8-sig", errors="ignore")
 
-    # Ưu tiên dấu phẩy, nếu không có thử ; rồi \t
-    if sample.count(",") >= sample.count(";") and sample.count(",") > 0:
-        seps_to_try = [","]
+    if _is_probably_excel_bytes(head):
+        raise ValueError(
+            "This file looks like an Excel (.xlsx) renamed to .csv (zip header detected). "
+            "Please export to a real CSV from Excel (File → Save As → CSV UTF-8)."
+        )
+
+    # đoán delimiter dựa trên tần suất
+    text = head.decode("utf-8-sig", errors="ignore")
+    comma = text.count(",")
+    semi  = text.count(";")
+    tabs  = text.count("\t")
+
+    seps = []
+    if comma >= semi and comma >= tabs and comma > 0:
+        seps = ["," , ";", "\t"]
+    elif semi >= tabs and semi > 0:
+        seps = [";", ",", "\t"]
+    elif tabs > 0:
+        seps = ["\t", ",", ";"]
     else:
-        seps_to_try = [";", ",", "\t"]
+        # fallback vẫn thử các phương án
+        seps = [",", ";", "\t"]
 
     encodings = ["utf-8-sig", "utf-8", "latin-1"]
 
     last_err = None
     for enc in encodings:
-        for sep in seps_to_try:
+        for sep in seps:
             try:
                 df = pd.read_csv(csv_path, sep=sep, encoding=enc, engine="python")
-                # Nếu chỉ có 1 cột rất dài -> sep sai, thử tiếp
+                # nếu chỉ ra 1 cột rất dài => sep sai
                 if df.shape[1] <= 1:
                     continue
                 return df
@@ -46,7 +65,8 @@ def _read_csv_strict(csv_path: str) -> pd.DataFrame:
                 continue
 
     raise ValueError(
-        "Cannot parse CSV. Make sure the file is a real CSV (not an .xlsx renamed).\n"
+        "Cannot parse CSV with common delimiters/encodings. "
+        "Ensure it's a real CSV (not XLSX renamed) and uses ',', ';' or TAB. "
         f"Detail: {last_err}"
     )
 
@@ -54,63 +74,63 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Tìm & chuẩn hoá cột ticker
-    cols_lower = {c.lower(): c for c in df.columns}
+    # chuẩn hoá cột ticker
     if "ticker" not in df.columns:
         guess = None
-        for k in ["mã", "ma", "symbol", "ck", "ticker"]:
+        for key in ("mã", "ma", "symbol", "ck", "ticker"):
             for c in df.columns:
-                if k in c.lower():
-                    guess = c; break
-            if guess: break
+                if key.lower() in c.lower():
+                    guess = c
+                    break
+            if guess:
+                break
         if guess:
             df = df.rename(columns={guess: "ticker"})
-        else:
-            # Không có ticker thì vẫn trả về, phần UI sẽ cảnh báo
-            pass
 
-    # Chuẩn hoá ticker upper
     if "ticker" in df.columns:
         df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
 
-    # Chuẩn hoá 'statement' nếu có
-    if "statement" in df.columns:
-        df["statement"] = df["statement"].astype(str).str.strip().str.lower()
-
-    # Chuẩn hoá 'account' nếu có
-    if "account" in df.columns:
-        df["account"] = df["account"].astype(str).str.strip()
-
-    # Chuẩn hoá 'period' nếu có
-    if "period" in df.columns:
-        df["period"] = df["period"].astype(str).str.strip()
+    # chuẩn hoá các cột gợi ý (nếu có)
+    for col in ("statement", "account", "period"):
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
 
     return df
 
-def load_financial_csv(csv_path: str = CSV_PATH_DEFAULT) -> pd.DataFrame:
-    """Đọc CSV-only và chuẩn hoá cột cơ bản."""
-    df = _read_csv_strict(csv_path)
-    return _normalize_columns(df)
+def load_financial_csv(csv_path: Optional[str] = None) -> pd.DataFrame:
+    path, tried = resolve_csv_path(CANDIDATE_PATHS if csv_path is None else [csv_path])
+    df = _read_csv_strict(path)
+    df = _normalize_columns(df)
+    if df.empty:
+        raise ValueError(f"CSV parsed but empty. Path: {path}")
+    return df
 
-def list_tickers(csv_path: str = CSV_PATH_DEFAULT) -> List[str]:
-    """Trả về danh sách ticker duy nhất (upper, sort)."""
+def list_tickers(csv_path: Optional[str] = None) -> List[str]:
     df = load_financial_csv(csv_path)
     if "ticker" not in df.columns:
         return []
-    tickers = sorted([t for t in df["ticker"].dropna().astype(str).str.upper().unique() if t])
+    tickers = (
+        df["ticker"]
+        .dropna()
+        .astype(str)
+        .str.upper()
+        .str.strip()
+        .unique()
+        .tolist()
+    )
+    tickers = sorted([t for t in tickers if t and t != "NAN"])
     return tickers
 
 def filter_by_ticker_years(df: pd.DataFrame, ticker: str, years: int = 10) -> pd.DataFrame:
-    """
-    Lọc theo ticker; nếu có cột period thì lấy 10 kỳ gần nhất (sắp xếp theo period).
-    Nếu là wide-format (các cột 2013..2028F) thì trả nguyên DF theo ticker (tabs sẽ pivot hiển thị).
-    """
-    if "ticker" in df.columns and ticker:
-        df = df[df["ticker"].astype(str).str.upper() == ticker.upper()].copy()
+    out = df.copy()
+    if "ticker" in out.columns and ticker:
+        out = out[out["ticker"].astype(str).str.upper() == ticker.upper()].copy()
 
-    if "period" in df.columns:
-        # sắp xếp giảm dần theo period (string), rồi lấy head 'years'
-        df = df.sort_values("period", ascending=False).groupby(list(set(df.columns) - {"period"}), as_index=False)\
-               .head(years)
-
-    return df
+    # Nếu có period thì lấy 10 kỳ gần nhất theo period (string sort)
+    if "period" in out.columns:
+        out = (
+            out.sort_values("period", ascending=False)
+              .groupby(list(set(out.columns) - {"period"}), as_index=False)
+              .head(years)
+        )
+    return out
