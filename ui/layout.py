@@ -1,5 +1,6 @@
+# layout.py
 import streamlit as st
-from core.data_access import load_configs, load_financial_long, filter_by_ticker_years
+from core.data_access import load_financial_long, filter_by_ticker_years
 
 def sidebar_inputs():
     st.sidebar.header("Ticker")
@@ -8,8 +9,18 @@ def sidebar_inputs():
     section = st.sidebar.radio("Choose", ["Financial","Sentiment","Summary"])
     return ticker, section
 
-def get_data(ticker: str):
-    app_cfg, path_cfg, map_cfg = load_configs()
-    df = load_financial_long(path_cfg, map_cfg)
-    df2 = filter_by_ticker_years(df, ticker, app_cfg.get("default_years", 10))
-    return df2
+def get_data(ticker: str, years: int = 10):
+    df = load_financial_long("data/bctc_final.csv")
+    return filter_by_ticker_years(df, ticker, years)
+
+def inject_css_theme():
+    st.markdown("""
+    <style>
+    :root { --blue:#1E3A8A; --red:#8B0000; }
+    h1,h2,h3 { color: var(--blue); }
+    .red-accent { color: var(--red); font-weight:700; }
+    </style>
+    """, unsafe_allow_html=True)
+
+def sidebar_controls():
+    return sidebar_inputs()
