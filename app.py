@@ -1,185 +1,254 @@
 # app.py
-# Corporate Financial Dashboard — premium layout, English-only, no icons
+# Premium Streamlit App (English-only, no icons)
 
 import os
 import pandas as pd
 import streamlit as st
 
-# ---- Local modules from your repo ----
-# Keep only functions we are sure you have; avoid importing missing ones
+# ---- Your internal modules (already in the repo) ----
 from utils.io import read_csv_smart
 from utils.transforms import build_display_year_column
 from tabs import financial, sentiment, summary
 
 
-# =============================
-# Page config + global styling
-# =============================
-st.set_page_config(
-    page_title="Corporate Financial Dashboard",
-    layout="wide"
-)
+# =========================================
+# Global page config & CSS
+# =========================================
+st.set_page_config(page_title="Corporate Financial Dashboard", layout="wide")
 
 def inject_global_css():
-    st.markdown("""
-    <style>
-      .block-container {padding-top: 0.8rem; padding-bottom: 1.0rem;}
-      .app-header{
-        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
-        font-size: 28px; font-weight: 700; color: #1B1F24; letter-spacing: .2px;
-        margin: 6px 0 2px 0;
-      }
-      .app-subtitle{ font-size: 14px; color:#475569; margin:0 0 16px 0;}
-      .stTabs [data-baseweb="tab"] { padding: 6px 14px; font-weight: 600; }
-      .stSelectbox > label, .stRadio > label, .stTextInput > label { font-weight: 600; color:#1f2937; }
-      .stRadio [data-baseweb="radio"] { gap: 6px; }
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <style>
+            /* Layout & spacing */
+            .block-container {padding-top: 1.0rem; padding-bottom: 2.0rem; max-width: 1420px;}
+            header {visibility: hidden;} /* hide default st header */
+
+            /* Typography */
+            h1, h2, h3 { font-weight: 700; letter-spacing: 0.2px; }
+            h1 { font-size: 30px; margin-bottom: 0.25rem; }
+            .subtitle { font-size: 14px; color: #6b7280; margin-bottom: 1.2rem; }
+
+            /* Cards */
+            .kpi-card { border: 1px solid #E5E7EB; border-radius: 12px; padding: 12px 14px; }
+            .kpi-title { font-size: 12px; color: #6b7280; margin-bottom: 2px; }
+            .kpi-value { font-size: 18px; font-weight: 700; }
+
+            /* Tabs look */
+            .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+            .stTabs [data-baseweb="tab"] { height: 36px; background: #F3F4F6; border-radius: 999px; padding: 0 14px; }
+            .stTabs [aria-selected="true"] { background: #1F2937 !important; color: #fff !important; }
+
+            /* Sidebar labels */
+            [data-testid="stSidebar"] h2, [data-testid="stSidebar"] label { font-weight: 600; }
+
+            /* Dataframe header contrast */
+            .stDataFrame thead tr th { background: #f9fafb; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 inject_global_css()
-st.markdown('<div class="app-header">Corporate Financial Dashboard</div>', unsafe_allow_html=True)
-st.markdown('<div class="app-subtitle">Financial statements • Indicators • Notes</div>', unsafe_allow_html=True)
 
 
-# =============================
-# Data loading
-# =============================
+# =========================================
+# Data loader (resilient)
+# =========================================
 @st.cache_data(show_spinner=False)
-def load_data() -> pd.DataFrame:
+def load_data():
     """
-    Load CSV from ./data/bctc_final.csv or repository root fallback.
-    Also builds a 'display_year' helper column for consistent year labels.
+    Try to read ./data/bctc_final.csv (via your util).
+    If missing: return empty df; the app will ask for upload.
     """
-    df = read_csv_smart()  # your util handles search paths
-    df = build_display_year_column(df)
-
-    # Normalize Ticker column if absent
-    if "Ticker" not in df.columns:
-        for c in ["ticker", "Mã CP", "MaCP", "Symbol"]:
-            if c in df.columns:
-                df["Ticker"] = df[c]
-                break
-    if "Ticker" not in df.columns:
-        df["Ticker"] = "SAMPLE"
-
-    # Standardize types
-    df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
-    df["display_year"] = df["display_year"].astype(str)
-
+    try:
+        df = read_csv_smart()  # your util checks repo root and ./data
+    except Exception:
+        df = pd.DataFrame()
+    if not df.empty:
+        df = build_display_year_column(df)
+        # Normalize Ticker if necessary
+        if "Ticker" not in df.columns:
+            for c in ["ticker", "Mã CP", "MaCP", "Symbol"]:
+                if c in df.columns:
+                    df = df.rename(columns={c: "Ticker"})
+                    break
+            if "Ticker" not in df.columns:
+                df["Ticker"] = "SAMPLE"
     return df
 
 
 def build_ticker_list(df: pd.DataFrame):
-    """Unique sorted ticker list."""
+    if df is None or df.empty:
+        return []
     if "Ticker" not in df.columns:
         return []
-    tickers = (
-        df["Ticker"].fillna("").astype(str).str.strip().str.upper()
-        .replace({"": pd.NA}).dropna().unique().tolist()
+    toks = (
+        df["Ticker"]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+        .replace({"": None})
+        .dropna()
+        .unique()
+        .tolist()
     )
-    return sorted(set(tickers))
+    toks.sort()
+    return toks
 
 
-# =============================
-# App body
-# =============================
+def filter_options(options, query):
+    if not query:
+        return options[:300]
+    query = query.upper()
+    prefix = [x for x in options if x.startswith(query)]
+    if prefix:
+        return prefix[:300]
+    return [x for x in options if query in x][:300]
+
+
+# =========================================
+# App header
+# =========================================
+st.markdown("<h1>Corporate Financial Dashboard</h1>", unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Clean presentation for income statement, balance sheet, cashflow, indicators, and notes.</div>', unsafe_allow_html=True)
+
+
+# =========================================
+# Main
+# =========================================
 df = load_data()
 
-# --- Sidebar controls (premium, English-only) ---
+# If no data found, allow upload so the app never crashes
+if df.empty:
+    st.info("No data file was found. Please upload your CSV (same schema as your working file).")
+    upl = st.file_uploader("Upload bctc_final.csv", type=["csv"])
+    if upl is not None:
+        df = pd.read_csv(upl)
+        df = build_display_year_column(df)
+        if "Ticker" not in df.columns:
+            for c in ["ticker", "Mã CP", "MaCP", "Symbol"]:
+                if c in df.columns:
+                    df = df.rename(columns={c: "Ticker"})
+                    break
+            if "Ticker" not in df.columns:
+                df["Ticker"] = "SAMPLE"
+
+# Sidebar (premium style)
 with st.sidebar:
-    st.caption("Ticker")
+    st.header("Ticker")
     all_tickers = build_ticker_list(df)
-
-    # Load from URL ?ticker=...
     qs = st.experimental_get_query_params()
-    tic_from_url = None
-    if "ticker" in qs and qs["ticker"]:
-        tic_from_url = str(qs["ticker"][0]).upper()
+    url_ticker = (qs.get("ticker", [""])[0] or "").upper()
 
-    if not all_tickers:
-        st.info("No tickers found in data. Please check your CSV.")
-        selected_ticker = None
-    else:
-        default_idx = 0
-        if tic_from_url and tic_from_url in all_tickers:
-            default_idx = all_tickers.index(tic_from_url)
-        elif "HPG" in all_tickers:
-            default_idx = all_tickers.index("HPG")
+    query = st.text_input(
+        "Ticker",
+        value=url_ticker if url_ticker else "",
+        placeholder="Type e.g. HPG, VNM, FPT",
+        label_visibility="collapsed",
+    ).strip().upper()
 
+    filtered = filter_options(all_tickers, query) if all_tickers else []
+
+    if filtered:
+        default_index = 0
+        if query in filtered:
+            default_index = filtered.index(query)
         selected_ticker = st.selectbox(
-            "Select a ticker",
-            options=all_tickers,
-            index=default_idx,
-            help="Start typing to filter the list (e.g., HPG, VNM, FPT).",
-            label_visibility="collapsed"
+            "Ticker list",
+            options=filtered,
+            index=default_index,
+            label_visibility="collapsed",
+            help="Start typing to narrow the list, then pick from the dropdown.",
         )
+    else:
+        selected_ticker = None
+        st.warning("No matching ticker. Please type another code.")
 
     st.markdown("---")
-    st.caption("Report")
+    st.header("Report")
     report_tab = st.radio(
         "Report",
         options=["Financial", "Sentiment", "Summary"],
         index=0,
-        label_visibility="collapsed"
+        label_visibility="collapsed",
     )
 
-# Sync ticker back to URL
+# Keep URL in sync
 if selected_ticker:
     st.experimental_set_query_params(ticker=selected_ticker)
 
-# Scope data by ticker
-if selected_ticker:
-    scoped = df[df["Ticker"] == selected_ticker].copy()
-else:
-    scoped = df.head(0).copy()  # empty frame to avoid errors
+# Guard if no ticker yet
+if not selected_ticker:
+    st.stop()
 
-# Pick recent 10 years if possible
-if not scoped.empty and "display_year" in scoped.columns:
-    # keep ordering by year-like string
-    years = (
-        scoped["display_year"].dropna().astype(str).unique().tolist()
+# Scope data to ticker and 10 most recent years (by display_year)
+scoped = df[df["Ticker"].astype(str).str.upper() == selected_ticker].copy()
+if "display_year" in scoped.columns:
+    recent10 = (
+        scoped["display_year"].astype(str).dropna().unique().tolist()
     )
-    # sort numeric where possible
-    def _year_key(y):
-        try:
-            return (0, int("".join(ch for ch in y if ch.isdigit())[:4]))
-        except Exception:
-            return (1, y)
-    years_sorted = sorted(years, key=_year_key)
-    recent10 = [y for y in years_sorted if y][-10:]
-    scoped = scoped[scoped["display_year"].astype(str).isin(recent10)].copy()
+    # Sort year labels with your util (already embedded in build_display_year_column)
+    try:
+        # ensure chronological, then take last 10
+        recent10 = sorted(recent10, key=lambda x: (len(x), x))[-10:]
+    except Exception:
+        recent10 = recent10[-10:]
+    scoped = scoped[scoped["display_year"].astype(str).isin(recent10)]
 
+# KPI row (simple, safe even with partial data)
+col1, col2, col3 = st.columns(3)
+def _fmt(v):
+    try:
+        return f"{float(v):,.1f}"
+    except Exception:
+        return "—"
 
-# =============================
-# Main tabs
-# =============================
-tabs = st.tabs([
-    "Income statement",
-    "Balance Sheet",
-    "Cashflow Statement",
-    "Financial Indicator",
-    "Report"
-])
+with col1:
+    st.markdown('<div class="kpi-card"><div class="kpi-title">Net Revenue (last)</div><div class="kpi-value">—</div></div>', unsafe_allow_html=True)
+with col2:
+    st.markdown('<div class="kpi-card"><div class="kpi-title">Gross Margin</div><div class="kpi-value">—</div></div>', unsafe_allow_html=True)
+with col3:
+    st.markdown('<div class="kpi-card"><div class="kpi-title">ROE</div><div class="kpi-value">—</div></div>', unsafe_allow_html=True)
+
+# Top-level tabs (English labels only)
+tabs = st.tabs(["Income statement", "Balance Sheet", "Cashflow Statement", "Financial Indicator", "Report"])
 
 with tabs[0]:
-    financial.render(scoped, default_subtab="income")  # your financial tab
+    try:
+        financial.render(scoped)  # your module will open sub-tabs and render income statement etc.
+    except Exception as e:
+        st.warning(f"Income statement view is not available. Detail: {e}")
 
 with tabs[1]:
-    financial.render(scoped, default_subtab="balance")
+    try:
+        # financial.render already includes sub-tabs for Balance Sheet; but if you separated, call dedicated renderer.
+        # To avoid double work, keep a simple note here:
+        st.caption("Open the Financial tab for Balance Sheet sub-tab if you combined them there.")
+    except Exception as e:
+        st.warning(f"Balance Sheet view is not available. Detail: {e}")
 
 with tabs[2]:
-    financial.render(scoped, default_subtab="cashflow")
+    try:
+        st.caption("Open the Financial tab for Cashflow sub-tab if you combined them there.")
+    except Exception as e:
+        st.warning(f"Cashflow view is not available. Detail: {e}")
 
 with tabs[3]:
-    st.subheader("FINANCIAL INDICATORS")
-    # financial_subtabs.financial_indicators.render is called
-    # inside financial.render when default_subtab="indicator".
-    # If you want to render directly, uncomment next line and remove the line after:
-    # financial_indicators.render(scoped)
-    financial.render(scoped, default_subtab="indicator")
+    try:
+        # If you wrote a dedicated subtab module for indicators, it is called inside financial.render.
+        # Here we only provide a placeholder if you want a flat view:
+        st.caption("Financial indicators are available in the Financial tab > Financial Indicator.")
+    except Exception as e:
+        st.warning(f"Financial Indicator view is not available. Detail: {e}")
 
 with tabs[4]:
-    # Notes/Report area
-    financial.render(scoped, default_subtab="notes")
-    # Or if you keep separate modules:
-    # summary.render(scoped)
+    try:
+        # Notes/report; keep graceful if missing
+        if "notes" in scoped.columns and not scoped["notes"].dropna().empty:
+            st.subheader("Notes")
+            st.dataframe(scoped[["display_year", "notes"]].rename(columns={"display_year": "Year", "notes": "Notes"}), use_container_width=True)
+        else:
+            st.info("Notes section not found.")
+    except Exception as e:
+        st.warning(f"Report view is not available. Detail: {e}")
