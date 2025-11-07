@@ -1,9 +1,30 @@
-# app.py
+# app.py (phần import ở đầu file)
+
 import streamlit as st
 import pandas as pd
+import re
 
 from utils.io import read_csv_smart
-from utils.transforms import build_display_year_column, sort_year_label
+
+# Try import; if missing, define a robust fallback locally
+try:
+    from utils.transforms import build_display_year_column, sort_year_label
+except ImportError:
+    from utils.transforms import build_display_year_column
+
+    def sort_year_label(label: str):
+        """
+        Sorting key for year labels:
+        - Extracts 4-digit year (e.g., 2016 from '2016', '2016A', 'FY2016', '2016F')
+        - Real years come before forecast years (suffix 'F' or 'f').
+        - Stable fallback to string if no year found.
+        """
+        s = str(label).strip()
+        is_forecast = s.endswith(("F", "f"))
+        m = re.search(r"(19|20)\d{2}", s)
+        year = int(m.group(0)) if m else 9999
+        return (year, 1 if is_forecast else 0, s)
+
 from tabs import financial, sentiment, summary
 from utils.ui import inject_global_css
 
