@@ -60,7 +60,7 @@ def load_data() -> pd.DataFrame:
 df = load_data()
 inject_global_css()
 
-left, right = st.columns([1, 3], vertical_alignment="start")
+left, right = st.columns([1, 3], vertical_alignment="top")
 
 with left:
     # All English labels, no icons added anywhere
