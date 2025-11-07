@@ -1,5 +1,11 @@
 import streamlit as st
-from layout import sidebar_inputs, get_data, inject_css_theme
+
+# Robust import: ưu tiên layout.py cùng thư mục; fallback sang ui/layout.py
+try:
+    from layout import sidebar_inputs, get_data, inject_css_theme
+except ModuleNotFoundError:
+    from ui.layout import sidebar_inputs, get_data, inject_css_theme
+
 from ui.tabs.financial import income as tab_income
 from ui.tabs.financial import balance as tab_balance
 from ui.tabs.financial import cashflow as tab_cash
