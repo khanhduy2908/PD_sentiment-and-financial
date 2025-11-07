@@ -139,7 +139,6 @@ with st.sidebar:
     st.header("Ticker")
     all_tickers = build_ticker_list(df)
     qs = st.experimental_get_query_params()
-    url_ticker = (qs.get("ticker", [""])[0] or "").upper()
 
     query = st.text_input(
         "Ticker",
