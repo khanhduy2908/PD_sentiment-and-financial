@@ -4,6 +4,7 @@ from core.data_access import (
     list_tickers,
     filter_by_ticker_years,
     resolve_csv_path,
+    preview_parse_info,
 )
 
 PRIMARY_BLUE = "#1E3A8A"  # xanh dương đậm
@@ -27,52 +28,43 @@ def inject_css_theme():
         color: var(--primary-blue);
       }}
       .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {{ color: var(--primary-blue); }}
-      .stButton>button, .downloadButton>button {{
-        border-radius: 6px; border: 1px solid var(--primary-blue);
-      }}
+      .css-1dp5vir, .stButton>button {{ border-radius: 6px; }}
     </style>
     """, unsafe_allow_html=True)
 
 @st.cache_data(show_spinner=False)
-def _cached_tickers_and_path():
-    """
-    Trả về (tickers, path, error_str).
-    Nếu có lỗi parse, trả tickers=[], error_str để sidebar hiển thị, app vẫn không crash.
-    """
-    try:
-        path, tried = resolve_csv_path()
-    except Exception as e:
-        return [], None, f"File not found. {e}"
-
-    try:
-        tks = list_tickers(path)
-        return tks, path, None
-    except Exception as e:
-        # Không crash — để người dùng vẫn có field nhập ticker
-        return [], path, f"CSV parse error: {e}"
+def _cached_tickers(path: str):
+    return list_tickers(path)
 
 def sidebar_inputs():
     st.sidebar.header("Report")
     section = st.sidebar.radio("Section", ["Financial", "Sentiment", "Summary"], index=0)
     st.sidebar.markdown("---")
 
+    # Hiển thị parse info ngắn gọn để bạn biết app đang đọc thế nào
+    info = preview_parse_info()
+    if "error" in info:
+        st.sidebar.error(f"CSV parse error: {info['error']}")
+        path, _ = resolve_csv_path()
+        st.sidebar.caption(f"Data source: {path}")
+        tickers = []
+    else:
+        st.sidebar.caption(
+            f"Data source: {info.get('path')} | sep='{info.get('sep')}' | "
+            f"encoding='{info.get('encoding')}' | skiprows={info.get('skiprows')}"
+        )
+        tickers = _cached_tickers(info["path"])
+
     st.sidebar.subheader("Ticker")
-    tickers, resolved_path, err = _cached_tickers_and_path()
-
-    if resolved_path:
-        st.sidebar.caption(f"Data source: {resolved_path}")
-    if err:
-        st.sidebar.error(err)
-
     if tickers:
         ticker = st.sidebar.selectbox(
-            "Search & select ticker",
+            "Ticker",
             options=tickers,
             index=0,
-            placeholder="Type to search...",
+            placeholder="Type to search…",
         )
     else:
-        ticker = st.sidebar.text_input("Enter ticker", value="", placeholder="E.g. HPG, VNM, ...").upper().strip()
+        ticker = st.sidebar.text_input("Ticker", value="", placeholder="E.g. HPG").upper().strip()
 
     return ticker, section
 
@@ -81,15 +73,12 @@ def _cached_df(path: str):
     return load_financial_csv(path)
 
 def get_data(ticker: str, years: int = 10):
-    # Dò path thực tế
     path, _ = resolve_csv_path()
     df = _cached_df(path)
     if df.empty:
-        raise ValueError("CSV is empty after parsing.")
+        st.warning("CSV parsed but empty.")
+        return df
     if "ticker" not in df.columns:
-        raise ValueError("CSV must contain a 'ticker' column.")
-
-    df2 = filter_by_ticker_years(df, ticker, years=years)
-    if df2.empty:
-        st.warning(f"No rows found for ticker '{ticker}'.")
-    return df2
+        st.error("CSV must contain a 'ticker' column.")
+        return df
+    return filter_by_ticker_years(df, ticker, years=years)
