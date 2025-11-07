@@ -1,71 +1,67 @@
-# utils/ui.py
+# utils/ui.py — Professional UI
 import streamlit as st
 
-PRIMARY = "#0b5ed7"          # Active tab blue
-PRIMARY_HOVER = "#0a53be"
+PRIMARY = "#0055a5"          
+PRIMARY_HOVER = "#003f7d"
 TAB_TEXT = "#ffffff"
-INACTIVE_BG = "#e9ecef"
+INACTIVE_BG = "#f2f2f2"
 FRAME_BG = "#ffffff"
-BORDER = "#dee2e6"
+BORDER = "#d0d0d0"
 
 def inject_global_css():
-    """Inject global CSS to style top tabs, tables and hide toolbars/icons."""
     st.markdown(f"""
     <style>
-      /* Page paddings & max width */
       .block-container {{
         padding-top: 1rem;
         padding-bottom: 1.25rem;
-        max-width: 1280px;
+        max-width: 1500px;
       }}
 
-      /* Hide all toolbars/icons (download, fullscreen, ... ) */
       [data-testid="stElementToolbar"] {{ display:none !important; }}
       [data-testid="StyledFullScreenButton"] {{ display:none !important; }}
       [data-testid="stDataFrameResizable"] button {{ display:none !important; }}
 
-      /* Tabs layout */
+      /* Tabs */
       [data-testid="stTabs"] div[role="tablist"] {{
-        gap: 12px;
-        margin-bottom: 12px;
+        gap: 10px;
+        margin-bottom: 8px;
+        border-bottom: 1px solid #e5e5e5;
+        padding-bottom: 4px;
       }}
 
-      /* Tab pill (inactive) */
       [data-testid="stTabs"] button[role="tab"] {{
         background: {INACTIVE_BG};
-        color: #212529;
-        border: 1px solid {BORDER};
-        border-radius: 14px;
-        padding: 8px 18px;
-        font-weight: 700;
-        letter-spacing: .2px;
+        padding: 8px 16px;
+        font-weight: 600;
+        border-radius: 12px;
+        border: 1px solid #ccc;
+        color: #333;
       }}
 
-      /* Tab pill (active) */
       [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {{
         background: {PRIMARY};
         color: {TAB_TEXT};
         border-color: {PRIMARY};
+        font-weight: 700;
       }}
+
       [data-testid="stTabs"] button[role="tab"][aria-selected="true"]:hover {{
         background: {PRIMARY_HOVER};
       }}
 
-      /* Headings */
       h2 {{
         font-weight: 700;
-        margin: .25rem 0 .75rem 0;
+        margin-top: 0.5rem;
+        margin-bottom: 1rem;
       }}
 
-      /* DataFrame frame */
       [data-testid="stDataFrame"] div[role="grid"] {{
         border: 1px solid {BORDER};
         border-radius: 8px;
         background: {FRAME_BG};
       }}
 
-      /* Table fonts */
-      thead tr th {{ font-weight: 700 !important; }}
-      tbody tr td {{ font-weight: 500; }}
+      thead tr th {{ font-weight: 700 !important; font-size: 13px; }}
+      tbody tr td {{ font-size: 13px; }}
     </style>
     """, unsafe_allow_html=True)
