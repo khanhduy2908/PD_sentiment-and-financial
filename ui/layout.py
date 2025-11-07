@@ -4,56 +4,45 @@ import os, io
 import streamlit as st
 import pandas as pd
 
+# Where we look for your file (put it in one of these)
 CSV_CANDIDATES = [
     "data/bctc_final.csv",
     "bctc_final.csv",
     "/mnt/data/bctc_final.csv",
 ]
+
 DEFAULT_YEARS = 10
 
-# ---------- Internal helpers ----------
-def _looks_like_xlsx(path: str) -> bool:
-    try:
-        with open(path, "rb") as f:
-            sig = f.read(4)
-        return sig[:2] == b"PK"  # likely an .xlsx renamed to .csv
-    except Exception:
-        return False
-
-def _best_candidate_path() -> str:
-    for p in CSV_CANDIDATES:
-        if os.path.exists(p):
-            return p
-    raise FileNotFoundError(
-        "CSV not found. Put the file at one of: " + ", ".join(CSV_CANDIDATES)
-    )
-
-@st.cache_data(show_spinner=False)
-def _read_csv_super_robust(path: str) -> pd.DataFrame:
-    """Read CSV robustly; fail with clear messages if not a true CSV."""
+# ---------- Smart CSV loader (mirrors your working pattern) ----------
+def read_csv_smart(path: str) -> pd.DataFrame:
+    """
+    Try common encodings first (like your working app). If columns=0,
+    retry with common delimiters. Never treats .xlsx as CSV.
+    """
     if not os.path.exists(path):
-        raise FileNotFoundError(f"CSV does not exist: {path}")
+        raise FileNotFoundError(f"CSV not found at: {path}")
 
-    if _looks_like_xlsx(path):
+    # Guard: don't accept Excel accidentally renamed as .csv
+    with open(path, "rb") as f:
+        sig = f.read(4)
+    if sig[:2] == b"PK":
         raise ValueError(
-            "The file appears to be an Excel workbook (.xlsx) renamed to .csv. "
-            "Please open it and Save As → CSV (Comma delimited)."
+            "This file looks like an Excel workbook (.xlsx) renamed to .csv. "
+            "Please save as real CSV (Comma delimited)."
         )
 
-    encodings = ("utf-8-sig", "utf-8", "cp1258", "latin1")
-
-    # 1) Let pandas sniff the delimiter
-    for enc in encodings:
+    # 1) Your working approach: try encodings
+    for enc in ("utf-8-sig", "utf-8", "latin1", "cp1258"):
         try:
-            df = pd.read_csv(path, engine="python", sep=None, encoding=enc)
+            df = pd.read_csv(path, encoding=enc)
             if df.shape[1] > 0:
                 return df
         except Exception:
             pass
 
-    # 2) Manual delimiter detection
+    # 2) If still no columns, sniff delimiter from text and re-read
     text = None
-    for enc in encodings:
+    for enc in ("utf-8-sig", "utf-8", "latin1", "cp1258"):
         try:
             with open(path, "r", encoding=enc, errors="ignore") as f:
                 text = f.read()
@@ -62,29 +51,29 @@ def _read_csv_super_robust(path: str) -> pd.DataFrame:
             continue
 
     if not text or not text.strip():
-        raise ValueError("CSV is empty or whitespace only.")
+        raise ValueError("CSV file is empty or whitespace only.")
 
-    lines = [ln for ln in text.splitlines() if ln.strip()][:60]
-    cands = [",", ";", "\t", "|"]
-    counts = {d: 0 for d in cands}
-    for ln in lines:
-        for d in cands:
-            counts[d] += ln.count(d)
-
-    best_sep = max(counts, key=counts.get)
-    if counts[best_sep] == 0:
+    sample = "\n".join([ln for ln in text.splitlines() if ln.strip()][:100])
+    delim_scores = {d: sample.count(d) for d in [",", ";", "\t", "|"]}
+    best = max(delim_scores, key=delim_scores.get)
+    if delim_scores[best] == 0:
         raise ValueError(
-            "Could not detect a common delimiter (',', ';', TAB, '|'). "
+            "Cannot detect a CSV delimiter (tried ',', ';', TAB, '|'). "
             "Please export a proper CSV."
         )
 
-    try:
-        df = pd.read_csv(io.StringIO(text), sep=best_sep)
-        if df.shape[1] == 0:
-            raise ValueError("Parsed but no valid columns found.")
-        return df
-    except Exception as e:
-        raise ValueError(f"Cannot parse CSV. Last error: {e}")
+    df = pd.read_csv(io.StringIO(text), sep=best)
+    if df.shape[1] == 0:
+        raise ValueError("Parsed text but found no columns in CSV.")
+    return df
+
+def _best_candidate_path() -> str:
+    for p in CSV_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    raise FileNotFoundError(
+        "CSV not found. Put bctc_final.csv at one of: " + ", ".join(CSV_CANDIDATES)
+    )
 
 def _normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -100,21 +89,23 @@ def _pick_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
             return lower[c.lower()]
     return None
 
-# ---------- Public data API (no core/* dependencies) ----------
 @st.cache_data(show_spinner=False)
 def load_financial_csv(path: str | None = None) -> pd.DataFrame:
     path = path or _best_candidate_path()
-    df = _read_csv_super_robust(path)
+    df = read_csv_smart(path)
     df = _normalize_cols(df)
 
-    # Require Ticker & Year (infer Year from Period if needed)
-    tick_col = _pick_col(df, ["Ticker", "ticker", "Symbol", "MaCK", "Code"])
+    # Map Ticker & Year (fall back to Period→Year)
+    tick_col = _pick_col(df, ["Ticker", "ticker", "Symbol", "Code", "MaCK"])
     year_col = _pick_col(df, ["Year", "year", "Nam", "Năm"])
+    per_col  = _pick_col(df, ["Period", "period", "Ky", "Kỳ"])
+
     if tick_col is None:
-        raise ValueError("Column 'Ticker' is required in CSV.")
+        raise ValueError("Column 'Ticker' (or Symbol/Code) is required in CSV.")
+
     if year_col is None:
-        per_col = _pick_col(df, ["Period", "period", "Ky", "Kỳ"])
         if per_col is not None:
+            # Use first 4 chars as year (e.g., '2023Q4' → 2023)
             df["Year"] = pd.to_numeric(df[per_col].astype(str).str[:4], errors="coerce")
             year_col = "Year"
         else:
@@ -126,7 +117,8 @@ def load_financial_csv(path: str | None = None) -> pd.DataFrame:
         df.rename(columns={year_col: "Year"}, inplace=True)
 
     df["Ticker"] = df["Ticker"].astype(str).str.upper().str.strip()
-    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+    df["Year"]   = pd.to_numeric(df["Year"], errors="coerce")
+
     df = df[df["Ticker"].astype(bool)]
     df = df[df["Year"].notna()]
 
@@ -150,7 +142,7 @@ def get_data(ticker: str, years: int = DEFAULT_YEARS) -> pd.DataFrame:
     df = load_financial_csv()
     return filter_by_ticker_years(df, ticker, years)
 
-# ---------- Theme/CSS (no icons/emojis) ----------
+# ---------- Theme (English only, no emojis/icons) ----------
 def inject_css_theme():
     st.markdown("""
     <style>
@@ -168,12 +160,13 @@ def _cached_tickers() -> list[str]:
 def sidebar_inputs() -> str:
     with st.sidebar:
         st.markdown('<div class="sidebar-title">Ticker</div>', unsafe_allow_html=True)
+        tickers = []
         try:
             tickers = _cached_tickers()
         except Exception as e:
             st.error(f"Cannot read tickers from CSV. Details: {e}")
-            tickers = []
 
+        # Keep last choice, default to first if available
         if "ticker" not in st.session_state and tickers:
             st.session_state["ticker"] = tickers[0]
 
@@ -182,8 +175,8 @@ def sidebar_inputs() -> str:
             options=tickers,
             index=(tickers.index(st.session_state.get("ticker")) if (tickers and st.session_state.get("ticker") in tickers) else 0),
             key="ticker",
-            help="The list comes directly from CSV; free typing is disabled to prevent invalid codes."
+            help="List is loaded from CSV; invalid codes are not allowed."
         )
 
-        st.caption("Select a ticker; the dashboard updates automatically.")
+        st.caption("Choose a ticker; tabs update automatically.")
         return ticker
