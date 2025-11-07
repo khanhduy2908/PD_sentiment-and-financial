@@ -137,33 +137,26 @@ if df.empty:
 # Sidebar (premium style)
 with st.sidebar:
     st.header("Ticker")
-    all_tickers = build_ticker_list(df)
+
+    # Build the full ticker list from your data
+    all_tickers = build_ticker_list(df)  # e.g., ["HPG","VNM","FPT",...]
+
+    # Optional: read ?ticker=HPG from URL to preselect
     qs = st.experimental_get_query_params()
     url_ticker = (qs.get("ticker", [""])[0] or "").upper()
 
-    query = st.text_input(
-        "Ticker",
-        value=url_ticker if url_ticker else "",
-        placeholder="Type e.g. HPG, VNM, FPT",
-        label_visibility="collapsed",
-    ).strip().upper()
+    # Decide default index
+    default_index = 0
+    if url_ticker and url_ticker in all_tickers:
+        default_index = all_tickers.index(url_ticker)
 
-    filtered = filter_options(all_tickers, query) if all_tickers else []
-
-    if filtered:
-        default_index = 0
-        if query in filtered:
-            default_index = filtered.index(query)
-        selected_ticker = st.selectbox(
-            "Ticker list",
-            options=filtered,
-            index=default_index,
-            label_visibility="collapsed",
-            help="Start typing to narrow the list, then pick from the dropdown.",
-        )
-    else:
-        selected_ticker = None
-        st.warning("No matching ticker. Please type another code.")
+    # Single dropdown (Streamlit selectbox supports type-to-search)
+    selected_ticker = st.selectbox(
+        "Select ticker",
+        options=all_tickers if all_tickers else [],
+        index=default_index if all_tickers else None,
+        placeholder="Select a ticker...",
+    )
 
     st.markdown("---")
     st.header("Report")
